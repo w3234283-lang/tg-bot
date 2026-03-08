@@ -1,12 +1,12 @@
 import asyncio
 import logging
 import random
+import aiohttp # Библиотека для скачивания
 from urllib.parse import quote
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, BufferedInputFile # Для отправки байтов
 
-# Твой токен
 TOKEN = "8755669309:AAG0i_Ql42SevYNgzdvJvRVCEYPe3ttK2XU"
 
 logging.basicConfig(level=logging.INFO)
@@ -14,7 +14,6 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Клава с кнопкой
 main_kb = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="🎨 Сгенерировать фото")]],
     resize_keyboard=True
@@ -22,62 +21,45 @@ main_kb = ReplyKeyboardMarkup(
 
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
-    await message.answer(
-        "🤖 Привет! Я ИИ-генератор изображений.\n\n"
-        "Пришли мне описание того, что хочешь увидеть (лучше на английском для точности), "
-        "и я создам это за пару секунд!",
-        reply_markup=main_kb
-    )
-
-@dp.message(F.text == "🎨 Сгенерировать фото")
-async def prompt_guide(message: types.Message):
-    await message.answer("Опиши словами, что нужно нарисовать:")
+    await message.answer("🤖 Бот готов к генерации! Напиши запрос.", reply_markup=main_kb)
 
 @dp.message()
 async def handle_generation(message: types.Message):
-    if not message.text:
+    if not message.text or message.text == "🎨 Сгенерировать фото":
+        if message.text == "🎨 Сгенерировать фото":
+            await message.answer("Опиши, что нарисовать:")
         return
 
-    # 1. Информируем пользователя
-    status_msg = await message.answer("🔄 Подключаюсь к нейросети...")
+    status_msg = await message.answer("🔄 Нейросеть генерирует изображение...")
     
     try:
-        # 2. Имитация этапов работы
-        await asyncio.sleep(1)
-        await status_msg.edit_text("🖌 Отрисовка деталей и освещения...")
-        
-        # 3. Формируем запрос
-        # Кодируем текст (чтобы русский язык и пробелы работали в ссылке)
         safe_prompt = quote(message.text)
         seed = random.randint(1, 1000000)
-        
-        # Используем прямой API эндпоинт для картинок
-        photo_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=1024&height=1024&seed={seed}&nologo=true&enhance=true"
+        # Убрали лишние параметры, оставили главное для стабильности
+        photo_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=1024&height=1024&seed={seed}&nologo=true"
 
-        # 4. Отправляем результат
-        await message.answer_photo(
-            photo=photo_url,
-            caption=(
-                f"✅ **Готово!**\n"
-                f"📝 Запрос: `{message.text}`\n"
-                f"🧠 Модель: Gemini 3 Flash Image"
-            ),
-            parse_mode="Markdown"
-        )
-        
-        # Удаляем сервисное сообщение
-        await status_msg.delete()
+        # Скачиваем картинку во временную память
+        async with aiohttp.ClientSession() as session:
+            async with session.get(photo_url) as response:
+                if response.status == 200:
+                    image_data = await response.read()
+                    # Создаем файл из байтов
+                    image_file = BufferedInputFile(image_data, filename="ai_photo.jpg")
+                    
+                    await message.answer_photo(
+                        photo=image_file,
+                        caption=f"✅ Готово!\nЗапрос: {message.text}\nМодель: Gemini 3 Flash Image"
+                    )
+                    await status_msg.delete()
+                else:
+                    await status_msg.edit_text("❌ Сервис генерации временно недоступен.")
 
     except Exception as e:
         logging.error(f"Ошибка: {e}")
-        await status_msg.edit_text("❌ Ошибка генерации. Попробуй другой запрос или подожди немного.")
+        await status_msg.edit_text("❌ Ошибка при загрузке фото. Попробуй еще раз.")
 
 async def main():
-    print("Бот запущен и готов к работе!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Бот остановлен")
+    asyncio.run(main())
