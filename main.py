@@ -1,156 +1,628 @@
 import asyncio
-import logging
-import sqlite3
-import random
-from aiogram import Bot, Dispatcher, types, F, Router
-from aiogram.filters import CommandStart
+import json
+import os
+from datetime import datetime
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import (
+ Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
+ LabeledPrice, PreCheckoutQuery, ContentType
+)
+из aiogram.client.default импортируйте DefaultBotProperties 
+из aiogram.enums импортируйте ParseMode
 
-API_TOKEN = '8741900639:AAEx7WMzNmdFQ3mxSG5Fx8DDSbhGtql7c-I'
+# ============= КОНФИГУРАЦИЯ =============
+BOT_TOKEN = "8755669309:AAG0i_Ql42SevYNgzdvJvRVCEYPe3ttK2XU"
+ADMIN_IDS = [7921743592] # Замените на ID админов
 
-logging.basicConfig(level=logging.INFO)
-bot = Bot(token=API_TOKEN)
-dp = Dispatcher()
+
+# ============= БАЗА ДАННЫХ =============
+class Database:
+ def __init__(self, filename="database.json"):
+ self.filename = filename
+ self.data = self.load()
+
+ def load(self):
+ if os.path.exists(self.filename):
+ with open(self.filename, "r", encoding="utf-8") as f:
+ return json.load(f)
+ return {
+ "start_message": {
+ "text": "👋 <b>Добро пожаловать!</b>\n\nВыберите товар для покупки:",
+ "media_type": None,
+ "media_id": None
+ },
+ "products": {},
+ "orders": [],
+ "stats": {"total_orders": 0, "total_revenue": 0}
+ }
+
+ def save(self):
+ with open(self.filename, "w", encoding="utf-8") as f:
+ json.dump(self.data, f, ensure_ascii=False, indent=2)
+
+ def add_product(self, product_id, name, description, price, material):
+ self.data["products"][product_id] = {
+ "name": name,
+ "description": description,
+ "price": price,
+ "material": material,
+ "created_at": datetime.now().isoformat()
+ }
+ self.save()
+
+ def get_products(self):
+ return self.data["products"]
+
+ def get_product(self, product_id):
+ return self.data["products"].get(product_id)
+
+ def delete_product(self, product_id):
+ if product_id in self.data["products"]:
+ del self.data["products"][product_id]
+ self.save()
+
+ def add_order(self, user_id, username, product_id, product_name, price):
+ order = {
+ "user_id": user_id,
+ "username": username,
+ "product_id": product_id,
+ "product_name": product_name,
+ "price": price,
+ "date": datetime.now().isoformat()
+ }
+ self.data["orders"].append(order)
+ self.data["stats"]["total_orders"] += 1
+ self.data["stats"]["total_revenue"] += price
+ self.save()
+
+ def get_stats(self):
+ return self.data["stats"]
+
+ def set_start_message(self, text, media_type=None, media_id=None):
+ self.data["start_message"] = {
+ "text": text,
+ "media_type": media_type,
+ "media_id": media_id
+ }
+ self.save()
+
+ def get_start_message(self):
+ return self.data["start_message"]
+
+
+db = Database()
+
+
+# ============= СОСТОЯНИЯ FSM =============
+class AdminStates(StatesGroup):
+ waiting_product_name = State()
+ waiting_product_description = State()
+ waiting_product_price = State()
+ waiting_product_material = State()
+ waiting_start_text = State()
+ waiting_start_media = State()
+
+
+# ============= КЛАВИАТУРЫ =============
+def get_main_keyboard():
+ products = db.get_products()
+ keyboard = []
+ for pid, product in products.items():
+ keyboard.append([InlineKeyboardButton(
+ text=f"🛍 {product['name']} - {product['price']} ⭐",
+ callback_data=f"buy_{pid}"
+ )])
+ return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def get_admin_keyboard():
+ keyboard = [
+ [InlineKeyboardButton(text="➕ Добавить товар", callback_data="admin_add_product")],
+ [InlineKeyboardButton(text="📋 Список товаров", callback_data="admin_list_products")],
+ [InlineKeyboardButton(text="✏️ Изменить /start", callback_data="admin_edit_start")],
+ [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")]
+ ]
+ return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def get_product_manage_keyboard(product_id):
+ keyboard = [
+ [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"admin_delete_{product_id}")],
+[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_list_products")]
+ ]
+ return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def get_cancel_keyboard():
+ return InlineKeyboardMarkup(inline_keyboard=[
+ [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_cancel")]
+ ])
+
+
+# ============= РОУТЕР =============
 router = Router()
-dp.include_router(router)
 
-# --- БАЗА ДАННЫХ ---
-def execute_query(query, params=(), fetchone=False, fetchall=False):
-    with sqlite3.connect('dating_bot.db') as conn:
-        cur = conn.cursor()
-        cur.execute(query, params)
-        if fetchone: return cur.fetchone()
-        if fetchall: return cur.fetchall()
-        conn.commit()
 
-def init_db():
-    execute_query('''CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY, username TEXT, name TEXT, age INTEGER, city TEXT, photo_id TEXT)''')
-    execute_query('''CREATE TABLE IF NOT EXISTS likes (
-        from_id INTEGER, to_id INTEGER, PRIMARY KEY (from_id, to_id))''')
+# ============= ПРОВЕРКА АДМИНИСТРАТОРА =============
+def is_admin(user_id: int) -> bool:
+ return user_id in ADMIN_IDS
 
-# --- СОСТОЯНИЯ ---
-class Registration(StatesGroup):
-    name, age, city, photo = State(), State(), State(), State()
+# ============= ОБРАБОТЧИКИ =============
+@router.message(Command("start"))
+async def cmd_start(message: Message):
+ start_msg = db.get_start_message()
+ keyboard = get_main_keyboard()
 
-# --- КЛАВИАТУРЫ ---
-def get_main_kb():
-    return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="🚀 Смотреть анкеты")],
-        [KeyboardButton(text="👤 Моя анкета"), KeyboardButton(text="⚙️ Изменить анкету")]
-    ], resize_keyboard=True)
+ if start_msg["media_type"] and start_msg["media_id"]:
+ if start_msg["media_type"] == "photo":
+ await message.answer_photo(
+ photo=start_msg["media_id"],
+ caption=start_msg["text"],
+ reply_markup=keyboard,
+ parse_mode=ParseMode.HTML
+ )
+ elif start_msg["media_type"] == "video":
+ await message.answer_video(
+ video=start_msg["media_id"],
+ caption=start_msg["text"],
+ reply_markup=keyboard,
+ parse_mode=ParseMode.HTML
+ )
+ elif start_msg["media_type"] == "animation":
+ await message.answer_animation(
+ animation=start_msg["media_id"],
+ caption=start_msg["text"],
+ reply_markup=keyboard,
+ parse_mode=ParseMode.HTML
+ )
+ else:
+ await message.answer(start_msg["text"], reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
-def get_rating_kb(to_id):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❤️", callback_data=f"like_{to_id}"),
-         InlineKeyboardButton(text="👎", callback_data=f"dislike_{to_id}")]
-    ])
 
-# --- РЕГИСТРАЦИЯ ---
-@router.message(CommandStart())
-@router.message(F.text == "⚙️ Изменить анкету")
-async def start_reg(message: types.Message, state: FSMContext):
-    await message.answer("📝 **Как тебя зовут?**", parse_mode="Markdown")
-    await state.set_state(Registration.name)
+@router.message(Command("admin"))
+async def cmd_admin(message: Message):
+ if not is_admin(message.from_user.id):
+ await message.answer("❌ У вас нет доступа к админ-панели!")
+ return
+ await message.answer(
+ "<b>🔧 Админ-панель</b>\n\nВыберите действие:",
+ reply_markup=get_admin_keyboard(),
+ parse_mode=ParseMode.HTML
+ )
 
-@router.message(Registration.name)
-async def reg_name(message: types.Message, state: FSMContext):
-    await state.update_data(name=message.text)
-    await message.answer(f"👋 Приятно познакомиться, *{message.text}*!\n\n🔢 **Сколько тебе лет?**", parse_mode="Markdown")
-    await state.set_state(Registration.age)
 
-@router.message(Registration.age)
-async def reg_age(message: types.Message, state: FSMContext):
-    if not message.text.isdigit():
-        return await message.answer("⚠️ Введи возраст числом!")
-    await state.update_data(age=int(message.text))
-    await message.answer("📍 **Из какого ты города?**", parse_mode="Markdown")
-    await state.set_state(Registration.city)
+# ============= ПОКУПКА ТОВАРА =============
+@router.callback_query(F.data.startswith("buy_"))
+async def process_buy(callback: CallbackQuery):
+ try:
+ # Получаем идентификатор товара
+ product_id = callback.data.replace("buy_", "")
 
-@router.message(Registration.city)
-async def reg_city(message: types.Message, state: FSMContext):
-    await state.update_data(city=message.text)
-    await message.answer("📸 **Пришли классное фото!**", parse_mode="Markdown")
-    await state.set_state(Registration.photo)
+ # Отладочная информация
+ print(f"DEBUG: Нажата кнопка buy, product_id = {product_id}")
+ print(f"DEBUG: Все товары в БД: {list(db.get_products().keys())}")
 
-@router.message(Registration.photo, F.photo)
-async def reg_photo(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    photo_id = message.photo[-1].file_id
-    execute_query("INSERT OR REPLACE INTO users VALUES (?, ?, ?, ?, ?, ?)",
-                (message.from_user.id, message.from_user.username, data['name'], data['age'], data['city'], photo_id))
-    
-    await message.answer("✅ **Анкета готова!**", reply_markup=get_main_kb(), parse_mode="Markdown")
-    await state.clear()
+ product = db.get_product(product_id)
 
-# --- ПРОСМОТР ---
-@router.message(F.text == "👤 Моя анкета")
-async def my_profile(message: types.Message):
-    user = execute_query("SELECT * FROM users WHERE id = ?", (message.from_user.id,), fetchone=True)
-    if user:
-        caption = f"✨ **Твоя карточка:**\n\n👤 {user[2]}, {user[3]}\n📍 {user[4]}"
-        await message.answer_photo(user[5], caption=caption, parse_mode="Markdown")
-    else:
-        await message.answer("У тебя еще нет анкеты. Жми /start")
+ if not product:
+ await callback.answer("❌ Товар не найден!", show_alert=True)
+ await callback.message.answer(
+ f"❌ Ошибка: товар с ID '{product_id}' не найден в базе данных.\n"
+ f"Доступные товары: {', '.join(db.get_products().keys())}"
+ ) 
+ возвращение
 
-@router.message(F.text == "🚀 Смотреть анкеты")
-async def show_users(message: types.Message):
-    # Ищем тех, кого еще не лайкали/дизлайкали и кто не я сам
-    query = """
-        SELECT * FROM users 
-        WHERE id != ? 
-        AND id NOT IN (SELECT to_id FROM likes WHERE from_id = ?)
-        ORDER BY RANDOM() LIMIT 1
-    """
-    target = execute_query(query, (message.from_user.id, message.from_user.id), fetchone=True)
+ ожидание обратного вызова.answer()
 
-    if not target:
-        return await message.answer("💎 **Анкеты закончились!** Приходи позже или измени свою.")
+ цены = [Обозначенная цена (ярлык = продукт ["название"], количество = продукт ["цена"])]
 
-    caption = f"🔥 **{target[2]}, {target[3]}**\n📍 {target[4]}"
-    await message.answer_photo(target[5], caption=caption, reply_markup=get_rating_kb(target[0]), parse_mode="Markdown")
+ await callback.message.answer_invoice(
+ title=product["name"],
+ description=product["description"],
+ payload=f"product_{product_id}",
+ provider_token="",
+ currency="XTR",
+ prices=prices
+ )
+ except Exception as e:
+ await callback.message.answer(f"❌ Ошибка: {str(e)}\n\nДанные обратного вызова: {callback.data}")
 
-# --- ВЗАИМОДЕЙСТВИЕ ---
-@router.callback_query(F.data.startswith("like_"))
-async def handle_like(callback: types.CallbackQuery):
-    to_id = int(callback.data.split("_")[1])
-    from_id = callback.from_user.id
-    
-    execute_query("INSERT OR IGNORE INTO likes VALUES (?, ?)", (from_id, to_id))
-    match = execute_query("SELECT * FROM likes WHERE from_id = ? AND to_id = ?", (to_id, from_id), fetchone=True)
 
-    if match:
-        # Инфо о текущем пользователе
-        me = execute_query("SELECT * FROM users WHERE id = ?", (from_id,), fetchone=True)
-        # Кнопка для перехода в ЛС
-        link_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💌 Написать", url=f"tg://user?id={from_id}")]
-        ])
-        link_kb_target = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💌 Написать", url=f"tg://user?id={to_id}")]
-        ])
+@router.pre_checkout_query()
+async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
+ await pre_checkout_query.answer(ok=True)
 
-        await bot.send_message(to_id, f"❤️ **Взаимная симпатия!**\nС тобой хочет пообщаться {me[2]}", 
-                               reply_markup=link_kb, parse_mode="Markdown")
-        await callback.message.answer("🎉 **Это мэтч!** Ссылка на профиль внизу", reply_markup=link_kb_target, parse_mode="Markdown")
-    
-    await callback.message.delete()
-    await show_users(callback.message)
 
-@router.callback_query(F.data.startswith("dislike_"))
-async def handle_dislike(callback: types.CallbackQuery):
-    # Записываем дизлайк в ту же таблицу, чтобы больше не показывать эту анкету
-    execute_query("INSERT OR IGNORE INTO likes VALUES (?, ?)", (callback.from_user.id, int(callback.data.split("_")[1])))
-    await callback.message.delete()
-    await show_users(callback.message)
+@router.message(F.successful_payment)
+async def process_successful_payment(message: Message):
+ try:
+ payment = message.successful_payment
+ # Получаем идентификатор товара из полезной нагрузки
+ product_id = payment.invoice_payload.replace("product_", "")
 
+ # Отладка
+ print(f"DEBUG: Успешная оплата, product_id = {product_id}")
+ print(f"DEBUG: Payload = {payment.invoice_payload}")
+ print(f"DEBUG: Все товары в БД: {list(db.get_products().keys())}")
+
+ product = db.get_product(product_id)
+
+ if not product:
+ await message.answer(
+ f"❌ Ошибка при получении товара!\n\n"
+ f"Идентификатор товара: {product_id}\n"
+ f"Доступные товары: {', '.join(db.get_products().keys())}\n\n"
+ f"Обратитесь к администратору!"
+ )
+ # Уведомляем администраторов
+ for admin_id in ADMIN_IDS:
+ try:
+ await message.bot.send_message(
+ admin_id,
+ f"⚠️ ОШИБКА! Пользователь @{message.from_user.username или message.from_user.id} "
+ f"оплатил товар {product_id}, но товар не найден в базе данных!"
+ )
+ except:
+ pass
+ return
+
+ # Сохраняем заказ
+ db.add_order(
+ message.from_user.id,
+ message.from_user.username или "Без имени пользователя",
+ product_id,
+ product["name"],
+ product["price"]
+ )
+
+ # Отправляем подтверждение
+ await message.answer(
+ f"✅ <b>Спасибо за покупку!</b>\n\n"
+ f"Товар: {product['name']}\n"
+ f"Цена: {product['price']} ⭐",
+ parse_mode=ParseMode.HTML
+ )
+
+ # Отправляем материал
+ material = product["material"]
+
+ if material["type"] == "text":
+ await message.answer(
+ f"📄 <b>Ваш материал:</b>\n\n{material['content']}",
+ parse_mode=ParseMode.HTML
+ )
+ elif material["type"] == "file":
+ await message.answer_document(
+ document=material["file_id"],
+ caption="📄 Ваш материал"
+ )
+ elif material["type"] == "photo":
+ await message.answer_photo(
+ photo=material["file_id"],
+ caption="📄 Ваш материал"
+ )
+ elif material["type"] == "video":
+ await message.answer_video(
+ video=material["file_id"],
+ caption="📄 Ваш материал"
+ )
+
+ # Уведомляем администраторов о продаже
+ для admin_id в ADMIN_IDS:
+ попробуйте:
+ await message.bot.send_message(
+ admin_id,
+ f"💰 <b>Новая продажа!</b>\n\n"
+ f"Товар: {product['name']}\n"
+ f"Цена: {product['price']} ⭐\n"
+ f"Покупатель: @{сообщение.от_user.username или message.from_user.id}", 
+ parse_mode=ParseMode.HTML
+ )
+ кроме:
+ передать
+
+ except Exception as e:
+ await message.answer(f"❌ Критическая ошибка: {str(e)}")
+ print(f"ОШИБКА в successful_payment: {e}")
+
+
+# ============= АДМИНИСТРАТОР: ДОБАВИТЬ ТОВАР =============
+@router.callback_query(F.data == "admin_add_product")
+async def admin_add_product(callback: CallbackQuery, state: FSMContext):
+ if not is_admin(callback.from_user.id):
+ await callback.answer("❌ Нет доступа!", show_alert=True)
+ return
+
+ await callback.message.edit_text(
+ "📝 <b>Добавление товара</b>\n\nВведите название товара:",
+ reply_markup=get_cancel_keyboard(),
+ parse_mode=ParseMode.HTML
+ )
+ await state.set_state(AdminStates.waiting_product_name)
+ await callback.answer()
+
+
+@router.message(AdminStates.waiting_product_name)
+async def admin_product_name(message: Message, state: FSMContext):
+ await state.update_data(name=message.text)
+ await message.answer(
+ "📝 Введите описание товара:",
+ reply_markup=get_cancel_keyboard()
+ )
+ await state.set_state(AdminStates.waiting_product_description)
+
+
+@router.message(AdminStates.waiting_product_description)
+async def admin_product_description(message: Message, state: FSMContext):
+ await state.update_data(description=message.text)
+ await message.answer(
+ "💰 Введите цену в звездах (целое число):",
+ reply_markup=get_cancel_keyboard()
+ )
+ await state.set_state(AdminStates.waiting_product_price)
+
+
+@router.message(AdminStates.ожидание admin_product_price) 
+асинхронное определение admin_product_price(сообщение: Message, состояние: FSMContext):
+ попробуйте:
+ price = int(message.text)
+ если price <= 0:
+ увеличить значение ValueError 
+ кроме ValueError:
+ await message.answer("❌ Введите корректную цену (целое положительное число)!")
+ Возврат
+
+ состояние ожидания.update_data(цена=price)
+ await message.answer(
+ "📦 <b>Отправьте материал для товара:</b>\n\n"
+ "Вы можете отправить:\n"
+ "• Текст\n"
+ "• Фото\n"
+ "• Видео\n"
+ "• Файл",
+ reply_markup=get_cancel_keyboard()
+ )
+ await state.set_state(AdminStates.waiting_product_material)
+
+
+@router.message(AdminStates.waiting_product_material)
+async def admin_product_material(message: Message, state: FSMContext):
+ material = {}
+
+ if message.text:
+ material = {"type": "text", "content": message.text}
+ elif message.photo:
+ material = {"type": "photo", "file_id": message.photo[-1].file_id}
+ elif message.video:
+ material = {"type": "video", "file_id": message.video.file_id}
+ elif message.document:
+ material = {"тип": "файл", "file_id": сообщение.документ.file_id}
+ ещё:
+ await message.answer("❌ Неподдерживаемый тип материала!")
+ Возврат
+
+ данные = состояние ожидания.get_data()
+ # Генерируем уникальный ID для товара
+ время импорта 
+ product_id = f"prod_{int(time.time())}"
+
+ db.add_product(
+ product_id,
+ data["name"],
+ data["description"],
+ data["price"],
+ material
+ )
+
+ await message.answer(
+ f"✅ <b>Товар успешно добавлен!</b>\n\n"
+ f"Название: {data['name']}\n"
+ f"Описание: {data['description']}\n"
+ f"Цена: {data['price']} ⭐",
+ reply_markup=get_admin_keyboard(),
+ parse_mode=ParseMode.HTML
+ )
+ await state.clear()
+
+
+# ============= АДМИН: СПИСОК ТОВАРОВ =============
+@router.обратный вызов_query(F.data == "admin_list_products")
+асинхронное определение admin_list_products (обратный вызов: CallbackQuery):
+ если нет, то is_admin(callback.from_user.id):
+ await callback.answer("❌ Нет доступа!", show_alert=True)
+ Возврат
+
+ products = db.get_products()
+
+ если не products, то:
+ await callback.message.edit_text(
+ "📋 <b>Список товаров пуст</b>",
+ reply_markup=get_admin_keyboard(),
+ parse_mode=ParseMode.HTML
+ )
+ await callback.answer()
+ return
+
+ keyboard = []
+ for pid, product in products.items():
+ keyboard.append([InlineKeyboardButton(
+ text=f"{product['name']} - {product['price']} ⭐",
+ callback_data=f"admin_view_{pid}"
+ )])
+ keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")])
+
+ await callback.message.edit_text(
+ "📋 <b>Список товаров:</b>",
+ reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+ parse_mode=ParseMode.HTML
+ )
+ await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_view_"))
+async def admin_view_product(callback: CallbackQuery):
+ product_id = callback.data.replace("admin_view_", "")
+ product = db.get_product(product_id)
+
+ если не product, то:
+ await callback.answer("❌ Товар не найден!", show_alert=True)
+ Возврат
+
+ text = ( 
+ f"🛍 <b>{продукт['название']}</b>\n\n"
+ f"📝 Описание: {product['description']}\n"
+ f"💰 Цена: {product['price']} ⭐\n"
+ f"📦 Материал: {product['material']['type']}"
+ )
+
+ await callback.message.edit_text(
+ текст,
+ разметка_ответа=get_product_manage_keyboard(product_id),
+ режим_разборки=ParseMode.HTML
+ )
+ await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_delete_"))
+async def admin_delete_product(callback: CallbackQuery):
+ product_id = callback.data.replace("admin_delete_", "")
+ db.delete_product(product_id)
+
+ await callback.answer("✅ Товар удален!", show_alert=True)
+ await admin_list_products(callback)
+
+
+# ============= АДМИН: ИЗМЕНИТЬ / НАЧАТЬ =============
+@router.callback_query(F.data == "admin_edit_start")
+async def admin_edit_start(callback: CallbackQuery, state: FSMContext):
+ if not is_admin(callback.from_user.id):
+ await callback.answer("❌ Нет доступа!", show_alert=True)
+ return
+
+ await callback.message.edit_text(
+ "✏️ <b>Изменение приветственного сообщения</b>\n\n"
+ "Отправьте новый текст для /start:",
+ reply_markup=get_cancel_keyboard(),
+ parse_mode=ParseMode.HTML
+ )
+ await state.set_state(AdminStates.waiting_start_text)
+ await callback.answer()
+
+
+@router.message(AdminStates.waiting_start_text)
+async def admin_start_text(message: Message, state: FSMContext):
+ await state.update_data(text=message.text)
+ await message.answer(
+ "📸 <b>Отправьте медиафайл (фото/видео/гиф)</b>\n\n"
+ "Или отправьте /skip, чтобы пропустить",
+ reply_markup=get_cancel_keyboard()
+ )
+ await state.set_state(AdminStates.waiting_start_media)
+
+
+@router.message(AdminStates.waiting_start_media, Command("skip"))
+async def admin_start_media_skip(message: Message, state: FSMContext):
+ data = await state.get_data()
+ db.set_start_message(data["text"])
+
+ await message.answer(
+ "✅ Приветственное сообщение обновлено!",
+ reply_markup=get_admin_keyboard()
+ )
+ await state.clear()
+
+
+@router.message(AdminStates.waiting_start_media)
+async def admin_start_media(message: Message, state: FSMContext):
+ media_type = None
+ media_id = None
+
+ if message.photo:
+ media_type = "photo"
+ media_id = message.photo[-1].file_id
+ elif message.video:
+ media_type = "video"
+ media_id = message.video.file_id
+ elif message.animation:
+ media_type = "animation"
+ media_id = сообщение.анимация.file_id 
+ еще:
+ await message.answer("❌ Отправьте фото, видео или гиф!")
+ Возврат
+
+ данные = состояние ожидания.get_data() 
+ db.set_start_message(данные["текст"], media_type, media_id)
+
+ ожидающее сообщение.ответить(
+ "✅ Приветственное сообщение обновлено с медиа!",
+ reply_markup=get_admin_keyboard()
+ )
+ await state.clear()
+
+
+# ============= АДМИНИСТРАТОР: СТАТИСТИКА =============
+@router.callback_query(F.data == "admin_stats")
+async def admin_stats(callback: CallbackQuery):
+ if not is_admin(callback.from_user.id):
+ await callback.answer("❌ Нет доступа!", show_alert=True)
+ return
+ stats = db.get_stats()
+ products_count = len(db.get_products())
+
+ text = (
+ f"📊 <b>Статистика</b>\n\n"
+ f"🛍 Товаров: {products_count}\n"
+ f"📦 Заказов: {stats['total_orders']}\n"
+ f"💰 Доход: {stats['total_revenue']} ⭐"
+ )
+
+ await callback.message.edit_text(
+ текст,
+ reply_markup=get_admin_keyboard(),
+ parse_mode=ParseMode.HTML
+ )
+ await callback.answer()
+
+
+# ============= АДМИНИСТРАТОР: ОТМЕНА/ВОЗВРАТ =============
+@router.callback_query(F.data == "admin_cancel")
+async def admin_cancel(callback: CallbackQuery, state: FSMContext):
+ await state.clear()
+ await callback.message.edit_text(
+ "<b>🔧 Админ-панель</b>\n\nВыберите действие:",
+ reply_markup=get_admin_keyboard(),
+ parse_mode=ParseMode.HTML
+ )
+ await callback.answer("❌ Действие отменено")
+
+
+@router.callback_query(F.data == "admin_back")
+async def admin_back(callback: CallbackQuery):
+ await callback.message.edit_text(
+ "<b>🔧 Админ-панель</b>\n\nВыберите действие:",
+ reply_markup=get_admin_keyboard(),
+ parse_mode=ParseMode.HTML
+ )
+ await callback.answer()
+
+
+# ============= ЗАПУСК БОТА =============
 async def main():
-    init_db()
-    await dp.start_polling(bot)
+ bot = Bot(
+ token=BOT_TOKEN,
+ default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+ )
+ dp = Dispatcher(storage=MemoryStorage())
+ dp.include_router(router)
 
-if __name__ == '__main__':
-    try: asyncio.run(main())
-    except KeyboardInterrupt: pass
+ await bot.delete_webhook(drop_pending_updates=True)
+ print("🤖 Бот запущен!")
+ await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+ asyncio.run(main())
