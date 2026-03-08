@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import random
+from urllib.parse import quote
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
@@ -12,7 +14,7 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Кнопка для удобства
+# Клава с кнопкой
 main_kb = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="🎨 Сгенерировать фото")]],
     resize_keyboard=True
@@ -21,49 +23,61 @@ main_kb = ReplyKeyboardMarkup(
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     await message.answer(
-        "Привет! Я продвинутый ИИ для создания изображений. 🤖\n"
-        "Просто напиши мне, что ты хочешь увидеть, или нажми кнопку ниже.",
+        "🤖 Привет! Я ИИ-генератор изображений.\n\n"
+        "Пришли мне описание того, что хочешь увидеть (лучше на английском для точности), "
+        "и я создам это за пару секунд!",
         reply_markup=main_kb
     )
 
 @dp.message(F.text == "🎨 Сгенерировать фото")
 async def prompt_guide(message: types.Message):
-    await message.answer("Введите текстовое описание для генерации (на английском или русском):")
+    await message.answer("Опиши словами, что нужно нарисовать:")
 
 @dp.message()
-async def generate_fake_photo(message: types.Message):
+async def handle_generation(message: types.Message):
     if not message.text:
         return
 
-    # Имитация работы ИИ
-    status_msg = await message.answer("🔄 Анализирую запрос...")
-    await asyncio.sleep(1.5)
-    
-    await status_msg.edit_text("🧬 Подбираю нейроны и текстуры...")
-    await asyncio.sleep(2)
-    
-    await status_msg.edit_text("🖌 Отрисовка деталей (75%)...")
-    await asyncio.sleep(1.5)
-
-    # Здесь мы используем бесплатный генератор картинок по URL (для примера)
-    # Этот сервис берет текст и отдает картинку.
-    photo_url = f"https://pollinations.ai/p/{message.text.replace(' ', '%20')}?width=1024&height=1024&seed=42"
+    # 1. Информируем пользователя
+    status_msg = await message.answer("🔄 Подключаюсь к нейросети...")
     
     try:
+        # 2. Имитация этапов работы
+        await asyncio.sleep(1)
+        await status_msg.edit_text("🖌 Отрисовка деталей и освещения...")
+        
+        # 3. Формируем запрос
+        # Кодируем текст (чтобы русский язык и пробелы работали в ссылке)
+        safe_prompt = quote(message.text)
+        seed = random.randint(1, 1000000)
+        
+        # Используем прямой API эндпоинт для картинок
+        photo_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=1024&height=1024&seed={seed}&nologo=true&enhance=true"
+
+        # 4. Отправляем результат
         await message.answer_photo(
             photo=photo_url,
-            caption=f"✅ Готово! Ваш запрос: *{message.text}*\nМодель: Gemini 3 Flash Image",
+            caption=(
+                f"✅ **Готово!**\n"
+                f"📝 Запрос: `{message.text}`\n"
+                f"🧠 Модель: Gemini 3 Flash Image"
+            ),
             parse_mode="Markdown"
         )
+        
+        # Удаляем сервисное сообщение
         await status_msg.delete()
+
     except Exception as e:
-        await status_msg.edit_text("❌ Произошла ошибка при генерации. Попробуйте другой запрос.")
+        logging.error(f"Ошибка: {e}")
+        await status_msg.edit_text("❌ Ошибка генерации. Попробуй другой запрос или подожди немного.")
 
 async def main():
+    print("Бот запущен и готов к работе!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("Бот выключен")
+        print("Бот остановлен")
