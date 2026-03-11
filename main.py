@@ -3,676 +3,400 @@ import logging
 import random
 import sqlite3
 from datetime import datetime
-
 import aiohttp
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import (
- CallbackQuery,
- InlineKeyboardButton,
- InlineKeyboardMarkup,
- Message,
-)
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-# CONFIG
 BOT_TOKEN = "8325669732:AAGFvmLJMbAOilhKWElk43LG-FksHJpCfNk"
 CRYPTO_TOKEN = "545475:AALkj6ssx8n0hVc2LR2ouWSat2YpoLCFUow"
 ADMIN_ID = 7921743592
 CRYPTO_API = "https://pay.crypt.bot/api"
-МИНИМАЛЬНАЯ СТАВКА = 0,10
-МАКСИМАЛЬНАЯ СТАВКА = 10,0
 ВАЛЮТА = "USDT"
-ИДЕНТИФИКАТОР КАНАЛА = Нет
+MIN_BET = 0,10
+MAX_BET = 10,0
+CHANNEL_ID = None
 
-ВЫИГРЫШНЫЕ ШАНСЫ = {
- "кубики": 1 / 6,
- "нечетные": 0,40,
- "баскетбол": 0,25,
- "футбол": 0,20,
- "боулинг": 0,25,
- "дартс": 0,15,
-}
+MULTIPLIERS = {"dice": 5.0, "evenodd": 1.8, "basketball": 3.0, "football": 3.5, "bowling": 2.5, "darts": 5.0}
+WIN_CHANCES = {"dice": 1/6, "evenodd": 0.40, "basketball": 0.25, "football": 0.20, "bowling": 0.25, "darts": 0.15}
+GAME_NAMES = {"dice": "Кубик", "evenodd": "Чет/Нечет", "basketball": "Баскетбол", "football": "Футбол", "bowling": "Боулинг", "darts": "Дартс"}
+TG_ICON = {"кости": "\U0001f3b2", "evenodd": "\U0001f3b2", "баскетбол": "\U0001f3c0", "футбол": "\u26bd", "боулинг": "\U0001f3b3", "дартс": "\U0001f3af"}
+TG_DICE_EMOJI = {"кости": "\U0001f3b2", "evenodd": "\U0001f3b2", "баскетбол": "\U0001f3c0", "футбол": "\u26bd", "боулинг": "\U0001f3b3", "дартс": "\U0001f3af"}
 
-MULTIPLIERS = {
- "игральные кости": 5.0,
- "evenodd": 1.8,
- "баскетбол": 3.0,
- "футбол": 3.5,
- "боулинг": 2.5,
- "дартс": 5.0,
-}
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
-GAME_EMOJI = {
- "dice": "dice",
- "evenodd": "dice",
- "basketball": "basketball",
- "football": "football",
- "bowling": "bowling",
- "darts": "darts",
-}
+# ---- БД ----
 
-GAME_ICON = {
- "игральные кости": "игральные кости",
- "evenodd": "игральные кости",
- "баскетбол": "баскетбол",
- "футбол": "футбол",
- "боулинг": "боулинг",
- "дартс": "дартс",
-}
+def db():
+ return sqlite3.connect("casino.db")
 
-DICE_EMOJI = {
- "dice": "dice",
- "evenodd": "dice",
- "basketball": "basketball",
- "football": "football",
- "bowling": "bowling",
- "darts": "darts",
-}
-
-ИМЕНА_ИГР = {
- "dice": "Кубик (точное число)",
- "evenodd": "Чет / Нечет",
- "basketball": "Баскетбол",
- "football": "Футбол",
- "bowling": "Боулинг",
- "darts": "Дартс",
-}
-
-EMOJI_MAP = {
- "dice": "dice",
- "evenodd": "dice",
- "basketball": "basketball",
- "football": "football",
- "bowling": "bowling",
- "darts": "darts",
-}
-
-TG_EMOJI = {
- "dice": "\U0001f3b2", 
- "evenodd": "\U0001f3b2", 
- "баскетбол": "U0001f3c0", 
- "футбол": "u26bd", 
- "боулинг": "U0001f3b3", 
- "дартс": "\U0001f3af",
-}
-
-ведение журнала.basicConfig(уровень = ведение журнала.ИНФОРМАЦИЯ)
-logger = ведение журнала.getLogger(__имя__)
-
-
-# БАЗА ДАННЫХ
-
-определение init_db(): 
- con = sqlite3.connect("casino.db")
- con.executescript(
- "СОЗДАТЬ ТАБЛИЦУ, ЕСЛИ НЕ СУЩЕСТВУЕТ настроек (текст ключа, ПЕРВИЧНЫЙ КЛЮЧ, ТЕКСТ значения)";
- "CREATE TABLE IF NOT EXISTS treasury (id INTEGER PRIMARY KEY CHECK (id=1), balance REAL NOT NULL DEFAULT 0);"
- "INSERT OR IGNORE INTO treasury VALUES (1, 0);"
- "CREATE TABLE IF NOT EXISTS bets ("
- " id INTEGER PRIMARY KEY AUTOINCREMENT,"
- " user_id INTEGER NOT NULL,"
- " username TEXT,"
- " game TEXT NOT NULL,"
- " choice TEXT,"
- " amount REAL NOT NULL,"
- " won INTEGER,"
- " payout REAL DEFAULT 0,"
- " invoice_id TEXT,"
- " created_at TEXT DEFAULT (datetime('now'))"
- ");"
- "CREATE TABLE IF NOT EXISTS users ("
- " user_id INTEGER PRIMARY KEY,"
- " username TEXT,"
- " total_bets INTEGER DEFAULT 0,"
- " total_won INTEGER DEFAULT 0,"
- " total_lost INTEGER DEFAULT 0,"
- " total_wagered REAL DEFAULT 0,"
- " total_payout REAL DEFAULT 0"
- ");"
- ) 
- con.commit()
- con.close()
-
-
-def get_setting(ключ, по умолчанию = Нет):
- con = sqlite3.connect("casino.db")
- row = con.execute("ВЫБРАТЬ значение ИЗ настроек, ГДЕ key=?", (ключ,)).fetchone() 
- con.close()
- возвращает строку[0], если по умолчанию используется строка else.
-
-
-def set_setting(ключ, значение):
- con = sqlite3.connect("casino.db")
- con.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (key, str(value)))
- con.commit()
- con.close()
-
-
-def get_treasury():
- con = sqlite3.connect("casino.db")
- bal = con.execute("SELECT balance FROM treasury WHERE id=1").fetchone()[0] 
- con.close()
- возвращает bal
-
-
-значение adjust_treasury(дельта):
- con = sqlite3.connect("casino.db")
- con.execute("ОБНОВИТЬ УСТАНОВЛЕННЫЙ баланс казначейства=balance+? ГДЕ id=1", (дельта,))
- con.commit()
- con.close()
-
-
-def save_bet(идентификатор пользователя, имя пользователя, игра, выбор, сумма, invoice_id):
- con = sqlite3.connect("casino.db")
- cur = con.cursor()
- cur.execute(
- "INSERT INTO bets (user_id,username,game,choice,amount,invoice_id) VALUES (?,?,?,?,?,?)",
- (user_id, username, game, choice, amount, invoice_id),
+def init_db():
+ c = db()
+ c.executescript(
+ "CREATE TABLE IF NOT EXISTS cfg (k TEXT PRIMARY KEY, v TEXT);"
+ "CREATE TABLE IF NOT EXISTS treasury (id INTEGER PRIMARY KEY CHECK(id=1), bal REAL DEFAULT 0);"
+ "INSERT OR IGNORE INTO treasury VALUES(1,0);"
+ "CREATE TABLE IF NOT EXISTS bets (id INTEGER PRIMARY KEY AUTOINCREMENT, uid INTEGER, uname TEXT, game TEXT, choice TEXT, amount REAL, won INTEGER, payout REAL DEFAULT 0, inv_id TEXT, ts TEXT DEFAULT(datetime('now')));"
+ "CREATE TABLE IF NOT EXISTS users (uid INTEGER PRIMARY KEY, uname TEXT, bets INTEGER DEFAULT 0, wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0, wagered REAL DEFAULT 0, paid REAL DEFAULT 0);"
  )
- bid = cur.lastrowid
- con.commit()
- con.close()
- return bid
+ c.commit()
+ c.close()
 
+def cfg_get(k, d= Нет):
+ c = db()
+ r = c.выполнить("ВЫБРАТЬ v ИЗ cfg, ГДЕ k=?", (k,)).fetchone() 
+ c.close()
+ верните r[0], если r еще d
 
-определение get_bet_by_invoice(invoice_id):
- con = sqlite3.connect("casino.db")
- строка = con.execute("ВЫБРАТЬ * ИЗ ставок, ГДЕ invoice_id=?", (invoice_id,)).fetchone() 
- con.close()
- вернуть строку
+определение cfg_set(k, v):
+ c = db()
+ c.execute("INSERT OR REPLACE INTO cfg VALUES(?,?)", (k, str(v)))
+ c.commit()
+ c.close()
 
+def treasury_get():
+ c = db()
+ v = c.execute("SELECT bal FROM treasury WHERE id=1").fetchone()[0]
+ c.close()
+ return v
 
-определение разрешающей ставки (invoice_id, выигранная сумма, выплата):
- con = sqlite3.connect("casino.db")
- cur = con.cursor()
+def treasury_add(delta):
+ c = db()
+ c.execute("UPDATE treasury SET bal=bal+? WHERE id=1", (delta,))
+ c.commit()
+ c.close()
+
+def bet_save(uid, uname, game, choice, amount, inv_id):
+ c = db()
+ cur = c.cursor() 
+ cur.execute("ВСТАВИТЬ В ЗНАЧЕНИЯ ставок(uid, uname,game,choice,amount, inv_id)(?,?,?,?,?,?)", ( uid, uname, игра, выбор, сумма, inv_id))
+ ставка = текущая.lastrowid 
+ c.commit()
+ c.close()
+ вернуть ставку
+
+определить bet_get(inv_id):
+ c = db()
+ r = c.выполнить("ВЫБРАТЬ * ИЗ ставок, ГДЕ inv_id=?", (inv_id,)).fetchone() 
+ c.закрыть()
+ вернуть r
+
+определение bet_resolve(inv_id, выигранный, выплата):
+ c = db()
+ cur = c.cursor() 
+ cur.execute("ОБНОВИТЬ НАБОР выигранных ставок =?, выплату =? ГДЕ inv_id=?", (1, если выиграно, остальное 0, выплата, inv_id))
+ r = cur.execute("SELECT uid,uname,amount FROM bets WHERE inv_id=?", (inv_id,)). fetchone()
+ if r:
+ uid, uname, amount = r
  cur.execute(
- "UPDATE bets SET won=?,payout=? WHERE invoice_id=?",
- (1 if won else 0, payout, invoice_id),
+ "INSERT INTO users(uid,uname,bets,wins,losses,wagered,paid) VALUES(?,?,1,?,?,?,?) "
+ "ON CONFLICT(uid) DO UPDATE SET uname=excluded.uname,bets=bets+1,wins=wins+excluded.wins,losses=losses+excluded.losses,wagered=wagered+excluded.wagered,paid=paid+excluded.paid",
+ (uid, uname, 1 if won else 0, 0 if won else 1, amount, payout)
  )
- row = cur.execute(
- "SELECT user_id,username,amount FROM bets WHERE invoice_id=?", (invoice_id,)
- ).fetchone()
- if row:
- uid, uname, amount = row
- cur.execute(
- "INSERT INTO users (user_id,username,total_bets,total_won,total_lost,total_wagered,total_payout) "
- "VALUES (?,?,1,?,?,?,?) "
- "ON CONFLICT(user_id) DO UPDATE SET "
- "username=excluded.username, "
- "total_bets=total_bets+1, "
- "total_won=total_won+excluded.total_won, "
- "total_lost=total_lost+excluded.total_lost, "
- "total_wagered=total_wagered+excluded.total_wagered, "
- "total_payout=total_payout+excluded.total_payout",
- (uid, uname, 1, если выиграл, 0, если проиграл, 0, сумма, выплата),
- )
- con.commit()
- con.close()
- return row
+ c.commit()
+ c.close()
+ return r
 
+def stats_get():
+ c = db()
+ cur = c.cursor()
+ total = cur.execute("SELECT COUNT(*) FROM bets WHERE won IS NOT NULL").fetchone()[0]
+ wins = cur.execute("SELECT COUNT(*) FROM bets WHERE won=1").fetchone()[0]
+ wagered = cur.execute("SELECT COALESCE(SUM(amount),0) FROM bets WHERE won IS NOT NULL").fetchone()[0]
+ paid = cur.execute("SELECT COALESCE(SUM(payout),0) FROM bets WHERE won=1").fetchone()[0]
+ bal = cur.execute("SELECT bal FROM treasury WHERE id=1").fetchone()[0]
+ top = cur.execute("SELECT uname,bets,wins,wagered,paid FROM users ORDER BY wagered DESC LIMIT 5").fetchall()
+ bygame = cur.execute("SELECT game,COUNT(*),SUM(won),COALESCE(SUM(amount),0) FROM bets WHERE won IS NOT NULL GROUP BY game"). fetchall()
+ c.close()
+ return {"total": total, "wins": wins, "wagered": wagered, "paid": paid, "bal": bal, "top": top, "bygame": bygame}
 
-def get_stats():
- con = sqlite3.connect("casino.db")
- cur = con.cursor()
- total_bets = cur.execute("SELECT COUNT(*) FROM bets WHERE won IS NOT NULL").fetchone()[0]
- total_won = cur.execute("SELECT COUNT(*) FROM bets WHERE won=1").fetchone()[0]
- total_wagered = cur.execute("SELECT COALESCE(SUM(amount),0) FROM bets WHERE won IS NOT NULL").fetchone()[0]
- total_payout = cur.execute("SELECT COALESCE(SUM(payout),0) FROM bets WHERE won=1").fetchone()[0]
- treasury = cur.execute("SELECT balance FROM treasury WHERE id=1").fetchone()[0]
- top_users = cur.execute(
- "SELECT username,total_bets,total_won,total_wagered,total_payout "
- "FROM users ORDER BY total_wagered DESC LIMIT 5"
- ).fetchall()
- game_stats = cur.execute(
- "SELECT game,COUNT(*) as cnt,SUM(won) as wins,COALESCE(SUM(amount),0) as wagered "
- "FROM bets WHERE won IS NOT NULL GROUP BY game"
- ).fetchall()
- con.close()
- return {
- "total_bets": total_bets,
- "total_won": total_won,
- "total_wagered": total_wagered,
- "total_payout": total_payout,
- "treasury": treasury,
- "top_users": top_users,
- "game_stats": game_stats,
- }
+# ---- КРИПТОВАЛЮТА ----
 
-
-# API КРИПТОБОТА
-
-async def create_invoice(amount, payload):
- url = CRYPTO_API + "/createInvoice"
+async def api_post(endpoint, params):
  headers = {"Crypto-Pay-API-Token": CRYPTO_TOKEN}
- params = {
- "актив": ВАЛЮТА,
- "сумма": str(round(сумма, 2)),
- "полезная нагрузка": полезная нагрузка,
- "описание": "ставка в казино",
- "expires_in": 300,
- }
+ session = aiohttp.ClientSession()
  try:
- async with aiohttp.ClientSession() as s:
- async with s.post(url, json=params, headers=headers) as r:
- data = await r.json()
+ resp = await session.post(CRYPTO_API + "/" + endpoint, json=params, headers=headers)
+ data = await resp.json()
+ await session.close()
  if data.get("ok"):
- возвращает data["результат"]
+ возвращаемые данные["результат"]
+ журнал.ошибка("ошибка api_post %s: %s", конечная точка, данные)
+ возвращает None 
  исключение, за исключением e: 
- logger.error("ошибка create_invoice: %s", e) 
+ log.error("исключение api_post %s: %s", конечная точка, e) 
+ ожидает сеанса.close()
  возвращает None
 
-
-асинхронное определение create_check(суммы):
- url = CRYPTO_API + "/createCheck"
+асинхронный def api_get(конечная точка, параметры):
  headers = {"Crypto-Pay-API-Token": CRYPTO_TOKEN}
- params = {"asset": CURRENCY, "amount": str(round(amount, 2))}
+ session = aiohttp.ClientSession()
  try:
- async with aiohttp.ClientSession() as s:
- async with s.post(url, json=params, headers=headers) as r:
- data = await r.json()
+ resp = await session.get(CRYPTO_API + "/" + endpoint, params=params, headers=headers)
+ data = await resp.json()
+ await session.close()
  if data.get("ok"):
- return data["result"]
- except Exception as e:
- logger.error("Ошибка create_check: %s", e)
- return None
+ возвращает данные ["результат"]
+ не возвращает ничего 
+ исключение, за исключением e: 
+ log.error("api_get %s exception: %s", конечная точка, e) 
+ ожидает сеанса.close()
+ не возвращает ничего
 
+асинхронное определение invoice_create(сумма, полезная нагрузка):
+ return await api_post("createInvoice", {
+ "asset": CURRENCY,
+ "amount": str(round(amount, 2)),
+ "payload": payload,
+ "description": "Ставка в казино",
+ "expires_in": 300
+ })
 
-async def get_paid_invoices():
- url = CRYPTO_API + "/getInvoices"
- headers = {"Crypto-Pay-API-Token": CRYPTO_TOKEN}
- params = {"asset": CURRENCY, "status": "paid", "count": 100}
- try:
- async with aiohttp.ClientSession() as s:
- async with s.get(url, params=params, headers=headers) as r:
- data = await r.json()
- if data.get("ok"):
- return data["result"].get("items", [])
- except Exception as e:
- logger.error("Ошибка get_paid_invoices: %s", e)
+async def check_create(amount):
+ return await api_post("createCheck", {"asset": CURRENCY, "amount": str(round(amount, 2))})
+
+async def invoices_paid():
+ r = await api_get("getInvoices", {"asset": CURRENCY, "status": "paid", "count": 100})
+ if r:
+ return r.get("items", [])
  return []
 
+async def transfer_admin(amount):
+ spend_id = "wd_" + str(int(datetime.now().timestamp()))
+ return await api_post("transfer", {"user_id": ADMIN_ID, "актив": ВАЛЮТА, "сумма": str(round(сумма, 2)), "spend_id": spend_id, "комментарий": "Вывод средств из казино"})
 
-async def transfer_to_admin(amount):
- url = CRYPTO_API + "/transfer"
- headers = {"Crypto-Pay-API-Token": CRYPTO_TOKEN}
- spend_id = "withdraw_" + str(int(datetime.now().timestamp()))
- params = {
- "user_id": ADMIN_ID,
- "asset": ВАЛЮТА,
- "amount": str(round(amount, 2)),
- "spend_id": spend_id,
- "comment": "Вывод средств из казино",
- }
- попробуйте: 
- выполнить синхронизацию с aiohttp.ClientSession() как s: 
- асинхронный с s.post(url, json=параметры, headers= заголовки) как r: 
- data = ожидание r.json()
- if data.get("ok"):
- возвращает data["результат"]
- исключение, за исключением e: 
- logger.error("ошибка передачи: %s", e) 
- возвращает None
+# ---- КЛАВИАТУРЫ ----
 
+def kb_main():
+ return InlineKeyboardMarkup(inline_keyboard=[
+ [InlineKeyboardButton(текст="\U0001f3b2 Кубик", callback_data="g: dice"), InlineKeyboardButton(текст="\U0001f3b2 Чет/Нечет", callback_data="g: evenodd")], 
+ [InlineKeyboardButton(text="\U0001f3c0 Баскетбол", callback_data="g: баскетбол"), InlineKeyboardButton(text="\u26bd Футбол", callback_data="g: футбол")], 
+ [InlineKeyboardButton(текст="\U0001f3b3 Боулинг", callback_data="g:боулинг"), InlineKeyboardButton(текст="\U0001f3af Дартс", callback_data="g: дартс")], 
+ [InlineKeyboardButton(text="\U0001f4ca Моя статистика", callback_data="mystats")], 
+ ])
 
-# КЛАВИАТУРЫ
+def kb_back():
+ return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\U0001f519 В меню", callback_data="menu")]])
 
-def main_menu_kb():
- return InlineKeyboardMarkup(
- inline_keyboard=[
- [
- InlineKeyboardButton(текст="\U0001f3b2 Кубик", callback_data="игра: кости"), 
- InlineKeyboardButton(текст="\U0001f3b2 Чет/Нечет", callback_data="игра: evenodd"), 
-], 
-[ 
- InlineKeyboardButton(текст="\U0001f3c0 Баскетбол", callback_data="игра: баскетбол"), 
- InlineKeyboardButton(текст="\u26bd Футбол", callback_data="игра: футбол"), 
-], 
-[ 
- InlineKeyboardButton(текст="\U0001f3b3 Боулинг", callback_data="игра: боулинг"), 
- InlineKeyboardButton(текст="\U0001f3af Дартс", callback_data="игра: дартс"), 
-], 
- [InlineKeyboardButton(text="\U0001f4ca Моя статистика", callback_data="my_stats")], 
-] 
- )
-
-
-def back_kb():
- return InlineKeyboardMarkup(
- inline_keyboard=[[InlineKeyboardButton(text="\U0001f519 Назад", callback_data="back_to_menu")]]
- )
-
-
-def bet_amount_kb(game, choice):
- amounts = [0,10, 0,25, 0,50, 1,0, 2,0, 5,0, 10,0]
- rows = []
- row = []
- for a in amounts:
- row.append(
- InlineKeyboardButton(
- text=str(a) + " " + ВАЛЮТА,
- callback_data="bet:" + game + ":" + choice + ":" + str(a),
- )
- )
- if len(row) == 4:
- rows.append(row)
- row = []
- if row:
- rows.append(row)
- rows.append([InlineKeyboardButton(text="\U0001f519 Назад", callback_data="back_to_menu")])
+def kb_amounts(game, choice):
+ btns = []
+ for a in [0.10, 0.25, 0.50, 1.0, 2.0, 5.0, 10.0]:
+ btns.append(InlineKeyboardButton(text=str(a) + " " + CURRENCY, callback_data="bet:" + game + ":" + choice + ":" + str(a)))
+ rows = [btns[0:4], btns[4:], [InlineKeyboardButton(text="\U0001f519 Назад", callback_data="menu")]]
  return InlineKeyboardMarkup(inline_keyboard=rows)
 
+def kb_dice_nums():
+ nums = [InlineKeyboardButton(text=str(i), callback_data="ch:dice:" + str(i)) for i in range(1, 7)]
+ return InlineKeyboardMarkup(inline_keyboard=[nums[:3], nums[3:], [InlineKeyboardButton(text="\U0001f519 Назад", callback_data="menu")]])
 
-def dice_choice_kb():
- nums = [
- InlineKeyboardButton(text=str(i), callback_data="choice:dice:" + str(i))
- for i in range(1, 7)
- ]
- return InlineKeyboardMarkup(
- inline_keyboard=[
- nums[:3],
- nums[3:],
- [InlineKeyboardButton(text="\U0001f519 Назад", callback_data="back_to_menu")],
- ]
- )
+def kb_evenodd():
+ return InlineKeyboardMarkup(inline_keyboard=[
+ [InlineKeyboardButton(text="Четное", callback_data="ch:evenodd:even"), InlineKeyboardButton(text="Нечетное", callback_data="ch:evenodd:odd")],
+ [InlineKeyboardButton(text="\U0001f519 Назад", callback_data="menu")]
+ ])
 
-
-def evenodd_choice_kb():
- return InlineKeyboardMarkup(
- inline_keyboard=[
- [
- InlineKeyboardButton(text="Четное", callback_data="choice:evenodd:even"),
- InlineKeyboardButton(text="Нечетное", callback_data="choice:evenodd:odd"),
- ],
- [InlineKeyboardButton(text="\U0001f519 Назад", callback_data="back_to_menu")],
- ]
- )
-
-
-def admin_menu_kb():
- return InlineKeyboardMarkup(
- inline_keyboard=[
+def kb_admin():
+ return InlineKeyboardMarkup(inline_keyboard=[
  [InlineKeyboardButton(text="\U0001f4ca Статистика", callback_data="adm:stats")],
  [InlineKeyboardButton(text="\U0001f4b0 Пополнить казну", callback_data="adm:deposit")],
  [InlineKeyboardButton(text="\U0001f4b8 Вывести из казны", callback_data="adm:withdraw")],
- [InlineKeyboardButton(text="\U0001f4e2 Установить канал", callback_data="adm:setchannel")],
+ [InlineKeyboardButton(text="\U0001f4e2 Установить канал", callback_data="adm:channel")],
  [InlineKeyboardButton(text="\U0001f4b5 Баланс казны", callback_data="adm:balance")],
- ]
- )
+ ])
 
+# ---- FSM ----
 
-# FSM
-class AdminFSM(StatesGroup):
+class Adm(StatesGroup):
  deposit = State()
  withdraw = State()
- setchannel = State()
+ channel = State()
 
+# ---- МАРШРУТИЗАТОР ----
 
-# МАРШРУТИЗАТОР
+rt = Router()
 
-router = Router()
-
-
-@router.message(Command("start"))
-async def cmd_start(msg: Message):
- text = (
- "\U0001f3b0 Добро пожаловать в Casino Bot!\n\n"
- "Минимальная ставка: " + str(MIN_BET) + " " + CURRENCY + "\n"
- "Максимальная ставка: " + str(MAX_BET) + " " + CURRENCY + "\n\n"
- "Выбери игру:"
+@rt.message(Command("start"))
+async def on_start(msg: Message):
+ await msg.answer(
+ "\U0001f3b0 Казино-бот\n\nМин.  ставка: " + str(MIN_BET) + " " + ВАЛЮТА + "\nМакс. ставка: " + str(MAX_BET) + " " + ВАЛЮТА + "\n\nВыбери игру:",
+ reply_markup=kb_main()
  )
- await msg.answer(text, reply_markup=main_menu_kb())
 
-
-@router.message(Command("admin"))
-async def cmd_admin(msg: Message):
+@rt.message(Command("admin"))
+async def on_admin(msg: Message):
  if msg.from_user.id != ADMIN_ID:
  await msg.answer("Нет доступа.")
  return
- await msg.answer("Панель администратора:", reply_markup=admin_menu_kb())
+ await msg.answer("Панель администратора:", reply_markup=kb_admin())
 
-
-@router.callback_query(F.data == "back_to_menu")
-async def back_to_menu(cb: CallbackQuery, state: FSMContext):
+@rt.callback_query(F.data == "menu")
+async def on_menu(cb: CallbackQuery, state: FSMContext):
  await state.clear()
- await cb.message.edit_text("Выбери игру:", reply_markup=main_menu_kb())
+ await cb.message.edit_text("Выбери игру:", reply_markup=kb_main())
  await cb.answer()
 
-
-@router.callback_query(F.data.startswith("game:"))
-async def game_select(cb: CallbackQuery):
- game = cb.data.split(":")[1]
- icon = TG_EMOJI[game]
+@rt.callback_query(F.data.startswith("g:"))
+async def on_game(cb: CallbackQuery):
+ game = cb.data[2:]
+ icon = TG_ICON[game]
  name = GAME_NAMES[game]
  mult = MULTIPLIERS[game]
-
  if game == "dice":
- text = icon + " " + name + "\nУгадай число от 1 до 6\nВыигрыш: ставка x" + str(mult) + "\n\nВыбери число: "
- await cb.message.edit_text(text, reply_markup=dice_choice_kb())
+ await cb.message.edit_text(icon + " " + name + "\nУгадай число от 1 до 6\nВыигрыш: x" + str(mult) + "\n\nВыбери число:", reply_markup=kb_dice_nums())
  elif game == "evenodd":
- text = icon + " " + name + "\nВыигрыш: ставка x" + str(mult) + "\n\nВыбери вариант:"
- await cb.message.edit_text(text, reply_markup=evenodd_choice_kb())
+ await cb.message.edit_text(icon + " " + name + "\nВыигрыш: x" + str(mult) + "\n\nВыбери вариант:", reply_markup=kb_evenodd())
  else:
- text = icon + " " + name + "\nВыигрыш: ставка x" + str(mult) + "\n\nВыбери сумму ставки:"
- await cb.message.edit_text(text, reply_markup=bet_amount_kb(game, "yes"))
+ await cb.message.edit_text(icon + " " + name + "\nВыигрыш: x" + str(mult) + "\n\nВыбери сумму ставки:", reply_markup=kb_amounts(game, "yes"))
  await cb.answer()
 
-
-@router.callback_query(F.data.startswith("choice:"))
-async def choice_select(cb: CallbackQuery):
+@rt.callback_query(F.data.startswith("ch:"))
+async def on_choice(cb: CallbackQuery):
  parts = cb.data.split(":")
  game = parts[1]
  choice = parts[2]
- icon = TG_EMOJI[game]
+ icon = TG_ICON[game]
  name = GAME_NAMES[game]
  mult = MULTIPLIERS[game]
- if game == "evenodd":
- choice_label = "Четное" if choice == "even" else "Нечетное"
- else:
- choice_label = choice
- text = (
- icon + " " + name + "\n"
- "Твой выбор: " + choice_label + "\n"
- "Выигрыш: ставка x" + str(mult) + "\n\n"
- "Выбери сумму ставки:"
- )
- await cb.message.edit_text(text, reply_markup=bet_amount_kb(game, choice))
+ cl = "Четное" if choice == "even" else ("Нечетное" if choice == "odd" else choice)
+ await cb.message.edit_text(icon + " " + name + "\nВыбор: " + cl + "\nВыигрыш: x" + str(mult) + "\n\nВыбери сумму:", reply_markup=kb_amounts(game, choice))
  await cb.answer()
 
-
-@router.callback_query(F.data.startswith("bet:"))
-async def place_bet(cb: CallbackQuery):
+@rt.callback_query(F.data.startswith("bet:"))
+async def on_bet(cb: CallbackQuery):
  parts = cb.data.split(":")
  game = parts[1]
  choice = parts[2]
  amount = float(parts[3])
-
  payload = game + "|" + choice + "|" + str(cb.from_user.id)
- invoice = await create_invoice(amount, payload)
-
- if not invoice:
- await cb.answer("Ошибка при создании счета. Попробуй позже.", show_alert=True)
- Возврат
-
- invoice_id = str(invoice.get("invoice_id", """))
- pay_url = invoice.get("bot_invoice_url", invoice.get("pay_url", ""))
-
- username = cb.from_user.username или cb.from_user.first_name или ("id" + str(cb.from_user.id))
- save_bet(cb.from_user.id, username, game, choice, amount, invoice_id)
-
- icon = TG_EMOJI[game]
- name = GAME_NAMES[game]
- mult = MULTIPLIERS[game]
- win_amount = round(amount * mult, 2)
-
- if game == "evenodd":
- choice_label = "Четное" if choice == "even" else "Нечетное"
- остальное: 
- выбранная метка = выбор
-
+ inv = await invoice_create(amount, payload)
+ if not inv:
+ await cb.answer("Ошибка при создании счета. Попробуйте позже.", show_alert=True)
+ return
+ inv_id = str(inv.get("invoice_id", ""))
+ pay_url = inv.get("bot_invoice_url", inv.get("pay_url", ""))
+ uname = cb.from_user.username или cb.from_user.first_name или ("id" + str(cb.from_user.id))
+ bet_save(cb.from_user.id, uname, game, choice, amount, inv_id)
+ win_sum = round(amount * MULTIPLIERS[game], 2)
+ cl = "Четное" if choice == "even" else ("Нечетное" if choice == "odd" else choice)
  текст = (
- "\U0001f4b3 Счет на оплату создан!\n\n"
- "Игра: " + icon + " " + name + "\n"
- "Ставка: " + str(amount) + " " + CURRENCY + "\n"
- "Выбор: " + choice_label + "\n"
- "Выигрыш при победе: " + str(win_amount) + " " + ВАЛЮТА + "\n\n"
- "Счет действителен в течение 5 минут"
+ "\U0001f4b3 Счет создан!\n\nИгра: " + TG_ICON[game] + " " + GAME_NAMES[game] + "\n" +
+ "Ставка: " + str(amount) + " " + CURRENCY + "\nВыбор: " + cl + "\n" +
+ "Выигрыш при победе: " + str(win_sum) + " " + CURRENCY + "\n\nСчет действует 5 минут"
  )
- kb = InlineKeyboardMarkup(
- inline_keyboard=[
+ await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
  [InlineKeyboardButton(text="Оплатить " + str(amount) + " " + ВАЛЮТА, url=pay_url)],
- [InlineKeyboardButton(text="\U0001f519 В меню", callback_data="back_to_menu")],
- ]
- )
- await cb.message.edit_text(text, reply_markup=kb)
+[InlineKeyboardButton(text="\U0001f519 В меню", callback_data="menu")],
+ ]))
  await cb.answer()
 
+@rt.callback_query(F.data == "mystats")
+async def on_mystats(cb: CallbackQuery):
+ c = db()
+ r = c.execute("SELECT bets,wins,losses,wagered,paid FROM users WHERE uid=?", (cb.from_user.id,)). fetchone()
+ c.close()
+ if not r:
+ await cb.answer("Нет статистики.", show_alert=True)
+ возврат 
+ tb, tw, tl, twa, tp = r 
+ текст = (
+ "\U0001f4ca Твоя статистика\n\n" +
+ "Ставок: " + str(tb) + "\nПобед: " + str(tw) + " | Поражений: " + str(tl) + "\n" +
+ "Поставлено: " + str(round(twa, 2)) + " " + CURRENCY + "\n" +
+ "Выиграно: " + str(round(tp, 2)) + " " + CURRENCY + "\n" +
+ "Профит: " + str(round(tp - twa, 2)) + " " + CURRENCY
+ )
+ await cb.message.edit_text(text, reply_markup=kb_back())
+ await cb.answer()
 
-@router.callback_query(F.data == "my_stats")
-async def my_stats(cb: CallbackQuery):
- con = sqlite3.connect("casino.db")
- row = con.execute(
- "SELECT total_bets,total_won,total_lost,total_wagered,total_payout FROM users WHERE user_id=?",
- (cb.from_user.id,),
- ).fetchone()
- con.close()
- if not row:
- await cb.answer("У вас еще нет статистики.", show_alert=True)
- return
- tb, tw, tl, twa, tp = row
- profit = round(tp - twa, 2)
- text = (
- "\U0001f4ca Твоя статистика\n\n"
- "Всего ставок: " + str(tb) + "\n"
- "Побед: " + str(tw) + " | Поражений: " + str(tl) + "\n"
- "Поставлено: " + str(round(twa, 2)) + " " + ВАЛЮТА + "\n"
- "Выиграно: " + str(round(tp, 2)) + " " + ВАЛЮТА + "\n"
- "Прибыль: " + str(profit) + " " + ВАЛЮТА
- ) 
- кб = InlineKeyboardMarkup ( 
- inline_keyboard=[[InlineKeyboardButton(text="\U0001f519 В меню", callback_data="back_to_menu")]]
- ) 
- ожидает cb.message.edit_text(текст, reply_markup= кб)
- ожидает cb.answer()
-
-
-# ОБРАТНЫЕ ВЫЗОВЫ АДМИНИСТРАТОРА
-
-@router.callback_query(F.data.startswith("adm:"))
-async def admin_cb(cb: CallbackQuery, state: FSMContext):
+@rt.callback_query(F.data.startswith("adm:")) 
+async def on_adm(cb: CallbackQuery, state: FSMContext):
  if cb.from_user.id != ADMIN_ID:
  await cb.answer("Нет доступа.", show_alert=True)
  return
- action = cb.data.split(":")[1]
- cancel_kb = InlineKeyboardMarkup(
- inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="adm:back")]]
+ act = cb.data[4:]
+ cancel = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="adm:back")]])
+ if act == "balance":
+ await cb.answer("Казна: " + str(round(treasury_get(), 2)) + " " + ВАЛЮТА, show_alert=True)
+ elif act == "stats":
+ s = stats_get()
+ wr = round(s["wins"] / s["total"] * 100, 1) if s["total"] else 0
+ текст = (
+ "Статистика казино\n\nКазна: " + str(round(s["bal"], 2)) + " " + CURRENCY + "\n\n" +
+ "Ставок: " + str(s["total"]) + "\nПобед игроков: " + str(s["wins"]) + " (" + str(wr) + "%)\n" +
+ "Оборот: " + str(раунд(ы["поставленная ВАЛЮТА"], 2)) + " " + + "\n" +
+ "Выплачено: " + str(round(s["paid"], 2)) + " " + CURRENCY + "\n" +
+ "Доход: " + str(раунд(ы["поставлено"] - ы["оплачено""], 2)) + " " + ВАЛЮТА
  )
-
- if action == "balance":
- bal = get_treasury()
- await cb.answer("Казна: " + str(round(bal, 2)) + " " + ВАЛЮТА, show_alert=True)
-
- elif action == "stats":
- s = get_stats()
- wr = round(s["total_won"] / s["total_bets"] * 100, 1) if s["total_bets"] else 0
- text = (
- "Статистика казино\n\n"
- "Казна: " + str(round(s["treasury"], 2)) + " " + ВАЛЮТА + "\n\n"
- "Всего ставок: " + str(s["total_bets"]) + "\n"
- "Побед игроков: " + str(s["total_won"]) + " (" + str(wr) + "%)\n"
- "Оборот: " + str(round(s["total_wagered"], 2)) + " " + CURRENCY + "\n"
- "Выплачено: " + str(round(s["total_payout"], 2)) + " " + ВАЛЮТА + "\n"
- "Доход казино: " + str(round(s["total_wagered"] - s["total_payout"], 2)) + " " + ВАЛЮТА + "\n"
- )
- if s["game_stats"]:
- text += "\nПо играм:\n"
- for g, cnt, wins, wag in s["game_stats"]:
- wr2 = round((wins or 0) / cnt * 100, 1) if cnt else 0
- text += TG_EMOJI.get(g, "") + " " + GAME_NAMES.get(g, g) + ": " + str(cnt) + " ставок, " + str(wr2) + "% побед\n"
- if s["top_users"]:
+ if s["bygame"]:
+ text += "\n\nПо играм:\n"
+ for g, cnt, w, wag in s["bygame"]:
+ wr2 = round((w or 0) / cnt * 100, 1) if cnt else 0
+ text += TG_ICON.get(g, "") + " " + GAME_NAMES.get(g, g) + ": " + str(cnt) + " ст., " + str(wr2) + "% побед\n"
+ if s["top"]:
  text += "\nТоп игроков:\n"
- for i, row in enumerate(s["top_users"], 1):
+ for i, row in enumerate(s["top"], 1):
  un, tb, tw, twa, tp = row
- text += str(i) + ". @" + str(un) + ": " + str(tb) + " ставок, " + str(round(twa, 2)) + " " + ВАЛЮТА + "\n"
- back_kb2 = InlineKeyboardMarkup(
- inline_keyboard=[[InlineKeyboardButton(text="\U0001f519 Назад", callback_data="adm:back")]]
- )
- await cb.message.edit_text(text, reply_markup=back_kb2)
-
- else if action == "deposit":
- await state.set_state(AdminFSM.deposit)
- await cb.message.edit_text("Введите сумму пополнения казны (" + ВАЛЮТА + "):", reply_markup=cancel_kb)
-
- elif action == "withdraw":
- bal = get_treasury()
- await state.set_state(AdminFSM.withdraw)
- await cb.message.edit_text(
- "Казна: " + str(round(bal, 2)) + " " + ВАЛЮТА + "\nВведите сумму вывода: ",
- reply_markup=cancel_kb,
- )
-
- elif action == "setchannel":
- await state.set_state(AdminFSM.setchannel)
- await cb.message.edit_text(
- "Отправьте сообщение из канала или введите его идентификатор (например, -1001234567890):",
- reply_markup=cancel_kb,
- )
-
- elif action == "back":
+ text += str(i) + ". @" + str(un) + ": " + str(round(twa, 2)) + " " + CURRENCY + "\n"
+ await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\U0001f519 Назад", callback_data="adm:back")]]))
+ elif act == "deposit":
+ await state.set_state(Adm.deposit)
+ await cb.message.edit_text("Введите сумму пополнения казны (" + ВАЛЮТА + "):", reply_markup=cancel)
+ elif act == "withdraw":
+ bal = treasury_get()
+ await state.set_state(Adm.withdraw)
+ await cb.message.edit_text("Казна: " + str(round(bal, 2)) + " " + ВАЛЮТА + "\nВведите сумму вывода:", reply_markup=cancel)
+ elif act == "канал":
+ await state.set_state(Adm.channel)
+ await cb.message.edit_text("Отправьте сообщение из канала или введите его идентификатор:", reply_markup=cancel)
+ elif act == "back":
  await state.clear()
- await cb.message.edit_text("Панель администратора:", reply_markup=admin_menu_kb())
-
+ await cb.message.edit_text("Панель администратора:", reply_markup=kb_admin())
  await cb.answer()
 
-
-@router.message(AdminFSM.deposit)
-async def admin_deposit(msg: Message, state: FSMContext):
+@rt.message(Adm.deposit)
+async def adm_deposit(msg: Message, state: FSMContext):
  if msg.from_user.id != ADMIN_ID:
  return
  try:
  amount = float(msg.text.replace(",", "."))
  if amount <= 0:
- raise ValueError
- except Exception:
- await msg.answer("Неверная сумма. Введите число больше 0.")
- return
- adjust_treasury(amount)
- await state.clear()
- bal = get_treasury()
- await msg.answer(
- "Казна пополнена на " + str(amount) + " " + ВАЛЮТА + "\nБаланс: " + str(round(bal, 2)) + " " + ВАЛЮТА,
- reply_markup=admin_menu_kb(),
- )
-
-
-@router.message(AdminFSM.withdraw)
-async def admin_withdraw(msg: Message, state: FSMContext):
- if msg.from_user.id != ADMIN_ID:
- return
- try:
- amount = float(msg.text.replace(",", "."))
- if amount <= 0:
- raise ValueError
+ raise ValueError("negative")
  except Exception:
  await msg.answer("Неверная сумма.")
  return
- bal = get_treasury()
+ treasury_add(amount)
+ await state.clear()
+ await msg.answer("Казна пополнена на " + str(amount) + " " + ВАЛЮТА + "\nБаланс: " + str(round(treasury_get(), 2)) + " " + ВАЛЮТА, reply_markup=kb_admin())
+
+@rt.message(Adm.withdraw)
+async def adm_withdraw(msg: Message, state: FSMContext):
+ if msg.from_user.id != ADMIN_ID:
+ return
+ try:
+ amount = float(msg.text.replace(",", "."))
+ if amount <= 0:
+ raise ValueError("negative")
+ except Exception:
+ await msg.answer("Неверная сумма.")
+ return
+ bal = treasury_get()
  if amount > bal:
  await msg.answer("Недостаточно средств. Казна: " + str(round(bal, 2)) + " " + ВАЛЮТА)
  return
- result = await transfer_to_admin(amount)
- if result:
- adjust_treasury(-amount)
- await msg.answer("Выведено " + str(amount) + " " + CURRENCY + " на ваш кошелек CryptoBot.", reply_markup=admin_menu_kb())
+ r = await transfer_admin(amount)
+ if r:
+ treasury_add(-amount)
+ await msg.answer("Выведено " + str(amount) + " " + CURRENCY + " на ваш кошелек.", reply_markup=kb_admin())
  else:
- await msg.answer("Ошибка перевода. Проверьте баланс CryptoBot.", reply_markup=admin_menu_kb())
+ await msg.answer("Ошибка перевода.", reply_markup=kb_admin())
  await state.clear()
 
-
-@router.message(AdminFSM.setchannel)
-async def admin_setchannel(msg: Message, state: FSMContext):
+@rt.message(Adm.channel)
+async def adm_channel(msg: Message, state: FSMContext):
  if msg.from_user.id != ADMIN_ID:
  return
  global CHANNEL_ID
@@ -682,165 +406,124 @@ async def admin_setchannel(msg: Message, state: FSMContext):
  try:
  CHANNEL_ID = int(msg.text.strip())
  except Exception:
- await msg.answer("Неверный формат. Введите числовой идентификатор канала.")
- возврат 
- set_setting("channel_id", str(CHANNEL_ID))
- состояние ожидания.очистить()
- await msg.answer("Канал установлен: " + str(CHANNEL_ID), reply_markup=admin_menu_kb())
+ await msg.answer("Неверный формат. Введите числовой идентификатор.")
+ return
+ cfg_set("channel_id", CHANNEL_ID)
+ await state.clear()
+ await msg.answer("Канал установлен: " + str(CHANNEL_ID), reply_markup=kb_admin())
 
+# ---- ОПРОСЧИК ----
 
-# ОПРОСЧИК ПЛАТЕЖЕЙ
+done_invs = set()
 
-обработано: set = set()
-
-
-асинхронный опрос_платежей с определением (бот: Bot):
- глобальный ИДЕНТИФИКАТОР КАНАЛА
- ch = get_setting("channel_id")
- if ch:
- CHANNEL_ID = int(ch)
-
+async def poller(bot: Bot):
+ global CHANNEL_ID
+ saved = cfg_get("channel_id")
+ if saved:
+ CHANNEL_ID = int(saved)
  while True:
  try:
- paid = await get_paid_invoices()
- for inv in paid:
+ items = await invoices_paid()
+ for inv in items:
  inv_id = str(inv.get("invoice_id", ""))
- if not inv_id or inv_id in processed:
+ if not inv_id or inv_id in done_invs:
  continue
- bet = get_bet_by_invoice(inv_id)
+ bet = bet_get(inv_id)
  if bet is None:
  continue
- # столбцы: id, user_id, username, game, choice, amount, won, payout, invoice_id, created_at
- bet_user_id = bet[1]
- bet_username = bet[2]
- bet_game = bet[3]
- bet_choice = bet[4]
- bet_amount = ставка[5] 
- bet_won = ставка[6]
+ # столбцы: id,uid,uname,game,choice,amount,won,payout,inv_id,ts
+ uid = bet[1]
+ uname = bet[2]
+ game = bet[3]
+ choice = bet[4]
+ amount = bet[5]
+ already_won = ставка[6]
+ если already_won не равен None: 
+ done_invs.add(inv_id)
+ продолжить 
+ done_invs.add(inv_id)
 
- если значение bet_won не равно None: 
- обработано.добавить (inv_id)
- продолжить
+ dice_msg = ожидает бота.отправить_дайс(uid, эмодзи =TG_DICE_EMOJI[игра])
+ dv = dice_msg.dice.value
 
- обработано.добавить (inv_id)
+ выигран = False 
+ выплата = 0.0
+ результат = ""
 
- # отправить анимацию с игральными костями
- tg_dice_emoji = {
- "dice": "\U0001f3b2", 
- "evenodd": "\U0001f3b2", 
- "баскетбол": "U0001f3c0", 
- "футбол": "u26bd", 
- "боулинг": "U0001f3b3", 
- "дартс": "\U0001f3af",
- }
- dice_msg = await bot.send_dice(bet_user_id, emoji=tg_dice_emoji[bet_game])
- dice_val = dice_msg.dice.value
-
- won = False
- payout = 0.0
- result_text = ""
-
- if bet_game == "dice":
- won = (dice_val == int(bet_choice))
- result_text = "Выпало: " + str(dice_val) + " | Твой выбор: " + str(bet_choice)
- elif bet_game == "evenodd":
- actual = "четное" if dice_val % 2 == 0 else "нечетное"
- won = (actual == bet_choice)
- actual_label = "Четное" if actual == "even" else "Нечетное"
- choice_label = "Четное" if bet_choice == "even" else "Нечетное"
- result_text = "Выпало: " + str(dice_val) + " (" + actual_label + ") | Выбор: " + choice_label
- elif bet_game == "basketball":
- выигранный = random.random() < WIN_CHANCES["баскетбол"]
- result_text = "Гол!" if won else "Мимо"
- elif bet_game == "футбол":
+ if game == "dice":
+ won = (dv == int(choice))
+ result = "Выпало: " + str(dv) + " | Выбор: " + str(choice)
+ elif game == "evenodd":
+ actual = "even" if dv % 2 == 0 else "odd"
+ won = (actual == choice)
+ al = "Четное" if actual == "even" else "Нечетное"
+ cl = "Четное" if choice == "even" else "Нечетное"
+ result = "Выпало: " + str(dv) + " (" + al + ") | Выбор: " + cl
+ elif game == "баскетбол":
+ выиграл = random.random() < WIN_CHANCES["баскетбол"]
+ результат = "Гол!" if выиграл else "Мимо"
+ elif game == "футбол":
  выиграл = random.random() < WIN_CHANCES["футбол"]
- result_text = "Гол!" if выиграл else "Мимо"
- elif bet_game == "боулинг":
- выиграл = (выпало 6)
- result_text = "Страйк!" if won else ("Результат: " + str(dice_val))
- elif bet_game == "дартс":
- won = (dice_val == 6)
- result_text = "В яблочко!" if won else ("Результат: " + str(dice_val))
+ результат = "Гол!" if выиграл else "Мимо"
+ elif game == "боулинг":
+ выиграл = (dv == 6)
+ результат = "Страйк!" if выиграл else ("Результат: " + str(dv))
+ elif game == "дартс": 
+ выиграл = (dv == 6)
+ результат = "В яблочко!" if выиграл else ("Результат: " + str(dv))
 
  если выиграл:
- выплата = round(сумма_ставки * КОЭФФИЦИЕНТЫ[игра_ставки], 2)
- скорректировать_кассу(-выплата)
+ выплата = round(сумма * КОЭФФИЦИЕНТЫ[игра], 2)
+ treasury_add(-выплата)
 
- разрешить_ставку(идентификатор_инвентаря, выигрыш, выплата)
- скорректировать_кассу(сумма_ставки)
+ bet_resolve(inv_id, выиграл, выплата)
+ treasury_add(amount)
 
- значок = TG_EMOJI[игра_ставки]
- название = НАЗВАНИЯ_ИГР[игра_ставки]
- uname_str = "@" + bet_username if bet_username else ("id" + str(bet_user_id))
+ icon = TG_ICON[game]
+ name = GAME_NAMES[game]
+ un = "@" + uname if uname else ("id" + str(uid))
 
  if won:
- check = await create_check(выплата)
- check_url = check["bot_check_url"] if check else ""
- user_text = (
- "\U0001f389 Победа!\n\n"
- "Игра: " + icon + " " + name + "\n"
- "Ставка: " + str(bet_amount) + " " + ВАЛЮТА + "\n"
- + result_text + "\n\n"
- "Выигрыш: +" + str(выплата) + " " + ВАЛЮТА + "\n\n"
- "Ваш чек на выигрыш:
+ chk = await check_create(payout)
+ chk_url = chk["bot_check_url"] if chk else ""
+ await bot.send_message(uid,
+ "\U0001f389 Победа!\n\nИгра: " + icon + " " + name + "\nСтавка: " + str(amount) + " " + ВАЛЮТА + "\n" + result + "\n\nВыигрыш: +" + str(выплата) + " " + ВАЛЮТА + "\n\nТвой чек:",
+ reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+ [InlineKeyboardButton(text="Получить " + str(выплата) + " " + ВАЛЮТА, url=chk_url)],
+ [InlineKeyboardButton(text="\U0001f3b0 Играть снова", callback_data="menu")],
+ ])
  )
- user_kb = InlineKeyboardMarkup(
- inline_keyboard=[
- [InlineKeyboardButton(text="Получить " + str(выплата) + " " + ВАЛЮТА, url=check_url)],
- [InlineKeyboardButton(text="\U0001f3b0 Сыграть снова", callback_data="back_to_menu")],
- ]
- )
- await bot.send_message(bet_user_id, user_text, reply_markup=user_kb)
- channel_text = (
- "\U0001f3c6 " + uname_str + " выиграл!\n"
- "Игра: " + icon + " " + name + "\n"
- "Ставка: " + str(bet_amount) + " " + ВАЛЮТА + " -> Выигрыш: " + str(выплата) + " " + ВАЛЮТА + "\n"
- + результат_текст
- )
+ ch_text = "\U0001f3c6 " + un + " выиграл!\nИгра: " + icon + " " + name + "\nСтавка: " + str(amount) + " -> Выигрыш: " + str(payout) + " " + CURRENCY + "\n" + result
  else:
- user_text = (
- "\U0001f61e Не повезло...\n\n"
- "Игра: " + иконка + " " + название + "\n"
- "Ставка: " + str(bet_amount) + " " + ВАЛЮТА + "\n"
- + результат_текст + "\n\n"
- "Попробуй еще раз!"
+ await bot.send_message(uid,
+ "\U0001f61e Не повезло...\n\nИгра: " + icon + " " + name + "\nСтавка: " + str(amount) + " " + ВАЛЮТА + "\n" + result + "\n\nПопробуй еще раз!",
+ reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+ [InlineKeyboardButton(text="\U0001f3b0 Играть снова", callback_data="menu")]
+ ])
  )
- user_kb = InlineKeyboardMarkup(
- inline_keyboard=[
- [InlineKeyboardButton(text="\U0001f3b0 Сыграть снова", callback_data="back_to_menu")]
- ]
- )
- await bot.send_message(bet_user_id, user_text, reply_markup=user_kb)
- channel_text = (
- "\U0001f4b8 " + uname_str + " сделал ставку\n"
- "Игра: " + иконка + " " + название + "\n"
- "Ставка: " + str(bet_amount) + " " + ВАЛЮТА + " - Проигрыш\n"
- + result_text
- )
+ ch_text = "\U0001f4b8 " + un + " сделал ставку\nИгра: " + icon + " " + name + "\nСтавка: " + str(amount) + " " + ВАЛЮТА + " - Проигрыш\n" + result
 
  if CHANNEL_ID:
  try:
- await bot.send_message(CHANNEL_ID, channel_text)
+ await bot.send_message(CHANNEL_ID, ch_text)
  except Exception as e:
- logger.warning("Не удалось опубликовать сообщение в канале: %s", e)
+ log.warning("не удалось отправить сообщение в канал: %s", e)
 
- за исключением исключения в виде e: 
- logger.error("ошибка опроса: %s", e)
+ except Exception as e:
+ log.error("ошибка опроса: %s", e)
 
- ожидание asyncio.sleep(5)
+ await asyncio.sleep(5)
 
+# ---- ОСНОВНАЯ ПРОГРАММА ----
 
-# MAIN
-
-асинхронное определение main():
+async def main():
  init_db()
- bot = Бот(токен=BOT_TOKEN)
- dp = диспетчер (хранилище =MemoryStorage())
- dp.include_router(маршрутизатор)
- asyncio.create_task(опрос_платежей(бот))
- logger.info("Бот запущен")
+ bot = Bot(token=BOT_TOKEN)
+ dp = Dispatcher(storage=MemoryStorage())
+ dp.include_router(rt)
+ asyncio.create_task(poller(bot))
+ log.info("started")
  await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
-
 
 if __name__ == "__main__":
  asyncio.run(main())
